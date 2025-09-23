@@ -19,12 +19,15 @@ export interface AdminConfig {
   };
   UserConfig: {
     AllowRegister?: boolean; // 是否允许用户注册，默认 true
+    AutoCleanupInactiveUsers?: boolean; // 是否自动清理非活跃用户，默认 false
+    InactiveUserDays?: number; // 非活跃用户保留天数，默认 7
     Users: {
       username: string;
       role: 'user' | 'admin' | 'owner';
       banned?: boolean;
       enabledApis?: string[]; // 优先级高于tags限制
       tags?: string[]; // 多 tags 取并集限制
+      createdAt?: number; // 用户注册时间戳
     }[];
     Tags?: {
       name: string;
