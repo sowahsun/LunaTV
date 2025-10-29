@@ -30,11 +30,14 @@ import {
   ChevronDown,
   ChevronUp,
   Database,
+  Download,
   ExternalLink,
   FileText,
   FolderOpen,
   Settings,
+  TestTube,
   Tv,
+  Upload,
   Users,
   Video,
 } from 'lucide-react';
@@ -48,7 +51,11 @@ import { getAuthInfoFromBrowserCookie } from '@/lib/auth';
 import AIRecommendConfig from '@/components/AIRecommendConfig';
 import CacheManager from '@/components/CacheManager';
 import DataMigration from '@/components/DataMigration';
+import ImportExportModal from '@/components/ImportExportModal';
+import SourceTestModule from '@/components/SourceTestModule';
+import { TelegramAuthConfig } from '@/components/TelegramAuthConfig';
 import TVBoxSecurityConfig from '@/components/TVBoxSecurityConfig';
+import { TVBoxTokenCell, TVBoxTokenModal } from '@/components/TVBoxTokenManager';
 import YouTubeConfig from '@/components/YouTubeConfig';
 import PageLayout from '@/components/PageLayout';
 
@@ -403,6 +410,15 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
   } | null>(null);
   const [showDeleteUserModal, setShowDeleteUserModal] = useState(false);
   const [deletingUser, setDeletingUser] = useState<string | null>(null);
+
+  // 🔑 TVBox Token 管理状态
+  const [showTVBoxTokenModal, setShowTVBoxTokenModal] = useState(false);
+  const [tvboxTokenUser, setTVBoxTokenUser] = useState<{
+    username: string;
+    tvboxToken?: string;
+    tvboxEnabledSources?: string[];
+  } | null>(null);
+  const [selectedTVBoxSources, setSelectedTVBoxSources] = useState<string[]>([]);
 
   // 当前登录用户名
   const currentUsername = getAuthInfoFromBrowserCookie()?.username || null;
@@ -779,8 +795,11 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
 
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -864,7 +883,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                     自动清理非活跃用户
                   </div>
                   <div className='text-sm text-gray-600 dark:text-gray-400'>
-                    自动删除注册后从未播放过内容的用户账号
+                    自动删除指定天数内未登录的非活跃用户账号
                   </div>
                 </div>
                 <div className='flex items-center'>
@@ -977,7 +996,7 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                   className='w-20 px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500'
                 />
                 <span className='text-sm text-gray-600 dark:text-gray-400'>
-                  天（注册后超过此天数且从未播放的用户将被自动删除）
+                  天（注册后超过此天数且从未登入的用户将被自动删除）
                 </span>
               </div>
             </div>
@@ -1072,8 +1091,19 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
               ))}
               {userGroups.length === 0 && (
                 <tr>
-                  <td colSpan={3} className='px-6 py-8 text-center text-sm text-gray-500 dark:text-gray-400'>
-                    暂无用户组，请添加用户组来管理用户权限
+                  <td colSpan={3} className='px-6 py-12'>
+                    <div className='flex flex-col items-center justify-center'>
+                      <div className='relative mb-4'>
+                        <div className='w-16 h-16 bg-gradient-to-br from-blue-100 to-indigo-200 dark:from-blue-900/40 dark:to-indigo-900/40 rounded-2xl flex items-center justify-center shadow-lg'>
+                          <svg className='w-8 h-8 text-blue-500 dark:text-blue-400' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+                            <path strokeLinecap='round' strokeLinejoin='round' strokeWidth='2' d='M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z'></path>
+                          </svg>
+                        </div>
+                        <div className='absolute -top-1 -right-1 w-3 h-3 bg-blue-400 rounded-full animate-ping'></div>
+                      </div>
+                      <p className='text-sm font-medium text-gray-700 dark:text-gray-300 mb-1'>暂无用户组</p>
+                      <p className='text-xs text-gray-500 dark:text-gray-400'>请添加用户组来管理用户权限</p>
+                    </div>
                   </td>
                 </tr>
               )}
@@ -1283,6 +1313,12 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                 </th>
                 <th
                   scope='col'
+                  className='px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'
+                >
+                  TVBox Token
+                </th>
+                <th
+                  scope='col'
                   className='px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider'
                 >
                   操作
@@ -1408,6 +1444,32 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
                                   user.username === currentUsername))) && (
                                 <button
                                   onClick={() => handleConfigureUserApis(user)}
+                                  className={buttonStyles.roundedPrimary}
+                                >
+                                  配置
+                                </button>
+                              )}
+                          </div>
+                        </td>
+                        {/* TVBox Token 列 */}
+                        <td className='px-6 py-4 whitespace-nowrap'>
+                          <div className='flex items-center space-x-2'>
+                            <TVBoxTokenCell tvboxToken={user.tvboxToken} />
+                            {/* 配置 TVBox Token 按钮 */}
+                            {(role === 'owner' ||
+                              (role === 'admin' &&
+                                (user.role === 'user' ||
+                                  user.username === currentUsername))) && (
+                                <button
+                                  onClick={() => {
+                                    setTVBoxTokenUser({
+                                      username: user.username,
+                                      tvboxToken: user.tvboxToken,
+                                      tvboxEnabledSources: user.tvboxEnabledSources
+                                    });
+                                    setSelectedTVBoxSources(user.tvboxEnabledSources || []);
+                                    setShowTVBoxTokenModal(true);
+                                  }}
                                   className={buttonStyles.roundedPrimary}
                                 >
                                   配置
@@ -2261,6 +2323,23 @@ const UserConfig = ({ config, role, refreshConfig }: UserConfigProps) => {
         document.body
       )}
 
+      {/* TVBox Token 管理弹窗 */}
+      {showTVBoxTokenModal && tvboxTokenUser && createPortal(
+        <TVBoxTokenModal
+          username={tvboxTokenUser.username}
+          tvboxToken={tvboxTokenUser.tvboxToken}
+          tvboxEnabledSources={selectedTVBoxSources}
+          allSources={(config?.SourceConfig || []).filter(s => !s.disabled).map(s => ({ key: s.key, name: s.name }))}
+          onClose={() => {
+            setShowTVBoxTokenModal(false);
+            setTVBoxTokenUser(null);
+            setSelectedTVBoxSources([]);
+          }}
+          onUpdate={refreshConfig}
+        />,
+        document.body
+      )}
+
       {/* 批量设置用户组弹窗 */}
       {showBatchUserGroupModal && createPortal(
         <div className='fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4' onClick={() => {
@@ -2393,6 +2472,26 @@ const VideoSourceConfig = ({
   const selectAll = useMemo(() => {
     return selectedSources.size === sources.length && selectedSources.size > 0;
   }, [selectedSources.size, sources.length]);
+
+  // 导入导出模态框状态
+  const [importExportModal, setImportExportModal] = useState<{
+    isOpen: boolean;
+    mode: 'import' | 'export' | 'result';
+    result?: {
+      success: number;
+      failed: number;
+      skipped: number;
+      details: Array<{
+        name: string;
+        key: string;
+        status: 'success' | 'failed' | 'skipped';
+        reason?: string;
+      }>;
+    };
+  }>({
+    isOpen: false,
+    mode: 'export',
+  });
 
   // 确认弹窗状态
   const [confirmModal, setConfirmModal] = useState<{
@@ -2837,10 +2936,192 @@ const VideoSourceConfig = ({
     });
   };
 
+  // 导出视频源
+  const handleExportSources = () => {
+    try {
+      // 获取要导出的源（如果有选中则导出选中的，否则导出全部）
+      const sourcesToExport =
+        selectedSources.size > 0
+          ? sources.filter((s) => selectedSources.has(s.key))
+          : sources;
+
+      if (sourcesToExport.length === 0) {
+        showAlert({
+          type: 'warning',
+          title: '没有可导出的视频源',
+          message: '请先添加视频源或选择要导出的视频源',
+        });
+        return;
+      }
+
+      // 创建导出数据
+      const exportData = sourcesToExport.map((source) => ({
+        name: source.name,
+        key: source.key,
+        api: source.api,
+        detail: source.detail || '',
+        disabled: source.disabled || false,
+      }));
+
+      // 生成文件名
+      const now = new Date();
+      const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `video_sources_${timestamp}.json`;
+
+      // 创建下载
+      const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      showAlert({
+        type: 'success',
+        title: '导出成功',
+        message: `已导出 ${sourcesToExport.length} 个视频源到 ${filename}`,
+        timer: 3000,
+      });
+
+      // 关闭模态框
+      setImportExportModal({ isOpen: false, mode: 'export' });
+    } catch (err) {
+      showAlert({
+        type: 'error',
+        title: '导出失败',
+        message: err instanceof Error ? err.message : '未知错误',
+      });
+    }
+  };
+
+  // 导入视频源
+  const handleImportSources = async (
+    file: File,
+    onProgress?: (current: number, total: number) => void
+  ) => {
+    try {
+      const text = await file.text();
+      const importData = JSON.parse(text);
+
+      if (!Array.isArray(importData)) {
+        throw new Error('JSON 格式错误：应为数组格式');
+      }
+
+      const result = {
+        success: 0,
+        failed: 0,
+        skipped: 0,
+        details: [] as Array<{
+          name: string;
+          key: string;
+          status: 'success' | 'failed' | 'skipped';
+          reason?: string;
+        }>,
+      };
+
+      const total = importData.length;
+
+      // 逐个导入
+      for (let i = 0; i < importData.length; i++) {
+        const item = importData[i];
+
+        // 更新进度
+        if (onProgress) {
+          onProgress(i + 1, total);
+        }
+
+        try {
+          // 验证必要字段
+          if (!item.name || !item.key || !item.api) {
+            result.failed++;
+            result.details.push({
+              name: item.name || '未知',
+              key: item.key || '未知',
+              status: 'failed',
+              reason: '缺少必要字段（name、key 或 api）',
+            });
+            continue;
+          }
+
+          // 检查是否已存在
+          const exists = sources.find((s) => s.key === item.key);
+          if (exists) {
+            result.skipped++;
+            result.details.push({
+              name: item.name,
+              key: item.key,
+              status: 'skipped',
+              reason: '该 key 已存在，跳过导入',
+            });
+            continue;
+          }
+
+          // 调用API导入
+          await callSourceApi({
+            action: 'add',
+            key: item.key,
+            name: item.name,
+            api: item.api,
+            detail: item.detail || '',
+          });
+
+          result.success++;
+          result.details.push({
+            name: item.name,
+            key: item.key,
+            status: 'success',
+          });
+        } catch (err) {
+          result.failed++;
+          result.details.push({
+            name: item.name,
+            key: item.key,
+            status: 'failed',
+            reason: err instanceof Error ? err.message : '导入失败',
+          });
+        }
+      }
+
+      // 显示结果
+      setImportExportModal({
+        isOpen: true,
+        mode: 'result',
+        result,
+      });
+
+      // 如果有成功导入的，刷新配置
+      if (result.success > 0) {
+        await refreshConfig();
+      }
+    } catch (err) {
+      showAlert({
+        type: 'error',
+        title: '导入失败',
+        message: err instanceof Error ? err.message : '文件解析失败',
+      });
+      setImportExportModal({ isOpen: false, mode: 'import' });
+    }
+
+    return {
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      details: [],
+    };
+  };
+
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -2887,6 +3168,32 @@ const VideoSourceConfig = ({
             </>
           )}
           <div className='flex items-center gap-2 order-1 sm:order-2'>
+            <button
+              onClick={() => setImportExportModal({ isOpen: true, mode: 'import' })}
+              className='px-3 py-1 text-sm rounded-lg transition-colors flex items-center space-x-1 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-700 hover:to-cyan-600 text-white'
+              title='从 JSON 文件导入视频源'
+            >
+              <Upload className='w-4 h-4' />
+              <span className='hidden sm:inline'>导入视频源</span>
+              <span className='sm:hidden'>导入</span>
+            </button>
+            <button
+              onClick={() => setImportExportModal({ isOpen: true, mode: 'export' })}
+              className='px-3 py-1 text-sm rounded-lg transition-colors flex items-center space-x-1 bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-700 hover:to-emerald-600 text-white'
+              title={
+                selectedSources.size > 0
+                  ? `导出选中的 ${selectedSources.size} 个视频源`
+                  : '导出所有视频源'
+              }
+            >
+              <Download className='w-4 h-4' />
+              <span className='hidden sm:inline'>
+                {selectedSources.size > 0
+                  ? `导出已选(${selectedSources.size})`
+                  : '导出视频源'}
+              </span>
+              <span className='sm:hidden'>导出</span>
+            </button>
             <button
               onClick={() => setShowValidationModal(true)}
               disabled={isValidating}
@@ -3136,6 +3443,16 @@ const VideoSourceConfig = ({
         </div>,
         document.body
       )}
+
+      {/* 导入导出模态框 */}
+      <ImportExportModal
+        isOpen={importExportModal.isOpen}
+        mode={importExportModal.mode}
+        onClose={() => setImportExportModal({ isOpen: false, mode: 'import' })}
+        onImport={handleImportSources}
+        onExport={handleExportSources}
+        result={importExportModal.result}
+      />
     </div>
   );
 };
@@ -3349,8 +3666,11 @@ const CategoryConfig = ({
 
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -3585,8 +3905,11 @@ const ConfigFileComponent = ({ config, refreshConfig }: { config: AdminConfig | 
 
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -3889,8 +4212,11 @@ const SiteConfigComponent = ({ config, refreshConfig }: { config: AdminConfig | 
 
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -4645,8 +4971,11 @@ const LiveSourceConfig = ({
 
   if (!config) {
     return (
-      <div className='text-center text-gray-500 dark:text-gray-400'>
-        加载中...
+      <div className='flex justify-center items-center py-8'>
+        <div className='flex items-center gap-3 px-6 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl border border-blue-200/50 dark:border-blue-700/50 shadow-md'>
+          <div className='animate-spin rounded-full h-5 w-5 border-2 border-blue-300 border-t-blue-600 dark:border-blue-700 dark:border-t-blue-400'></div>
+          <span className='text-sm font-medium text-gray-700 dark:text-gray-300'>加载配置中...</span>
+        </div>
       </div>
     );
   }
@@ -5178,6 +5507,7 @@ function AdminPageClient() {
   const [expandedTabs, setExpandedTabs] = useState<{ [key: string]: boolean }>({
     userConfig: false,
     videoSource: false,
+    sourceTest: false,
     liveSource: false,
     siteConfig: false,
     categoryConfig: false,
@@ -5185,6 +5515,7 @@ function AdminPageClient() {
     aiRecommendConfig: false,
     youtubeConfig: false,
     tvboxSecurityConfig: false,
+    telegramAuthConfig: false,
     configFile: false,
     cacheManager: false,
     dataMigration: false,
@@ -5262,12 +5593,14 @@ function AdminPageClient() {
             <h1 className='text-2xl font-bold text-gray-900 dark:text-gray-100 mb-8'>
               管理员设置
             </h1>
-            <div className='space-y-4'>
+            <div className='space-y-6'>
               {Array.from({ length: 3 }).map((_, index) => (
                 <div
                   key={index}
-                  className='h-20 bg-gray-200 dark:bg-gray-700 rounded-lg animate-pulse'
-                />
+                  className='relative h-24 bg-gradient-to-r from-gray-100 via-gray-200 to-gray-100 dark:from-gray-800 dark:via-gray-700 dark:to-gray-800 rounded-xl overflow-hidden'
+                >
+                  <div className='absolute inset-0 -translate-x-full animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/20 to-transparent'></div>
+                </div>
               ))}
             </div>
           </div>
@@ -5361,6 +5694,18 @@ function AdminPageClient() {
               <VideoSourceConfig config={config} refreshConfig={fetchConfig} />
             </CollapsibleTab>
 
+            {/* 源检测标签 */}
+            <CollapsibleTab
+              title='源检测'
+              icon={
+                <TestTube size={20} className='text-gray-600 dark:text-gray-400' />
+              }
+              isExpanded={expandedTabs.sourceTest}
+              onToggle={() => toggleTab('sourceTest')}
+            >
+              <SourceTestModule />
+            </CollapsibleTab>
+
             {/* 直播源配置标签 */}
             <CollapsibleTab
               title='直播源配置'
@@ -5447,6 +5792,52 @@ function AdminPageClient() {
             >
               <TVBoxSecurityConfig config={config} refreshConfig={fetchConfig} />
             </CollapsibleTab>
+
+            {/* Telegram 登录配置 - 仅站长可见 */}
+            {role === 'owner' && (
+              <CollapsibleTab
+                title='Telegram 登录配置'
+                icon={
+                  <svg
+                    viewBox='0 0 24 24'
+                    width='20'
+                    height='20'
+                    className='text-blue-500 dark:text-blue-400'
+                    fill='currentColor'
+                  >
+                    <path d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69.01-.03.01-.14-.07-.2-.08-.06-.19-.04-.27-.02-.12.03-1.99 1.27-5.62 3.72-.53.36-1.01.54-1.44.53-.47-.01-1.38-.27-2.05-.49-.82-.27-1.47-.42-1.42-.88.03-.24.37-.48 1.02-.73 4-1.74 6.68-2.88 8.03-3.44 3.82-1.58 4.61-1.85 5.13-1.86.11 0 .37.03.54.17.14.11.18.26.2.37.02.08.03.29.01.45z' />
+                  </svg>
+                }
+                isExpanded={expandedTabs.telegramAuthConfig}
+                onToggle={() => toggleTab('telegramAuthConfig')}
+              >
+                <TelegramAuthConfig
+                  config={
+                    config?.TelegramAuthConfig || {
+                      enabled: false,
+                      botToken: '',
+                      botUsername: '',
+                      autoRegister: true,
+                      buttonSize: 'large',
+                      showAvatar: true,
+                      requestWriteAccess: false,
+                    }
+                  }
+                  onSave={async (newConfig) => {
+                    if (!config) return;
+                    await fetch('/api/admin/config', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        ...config,
+                        TelegramAuthConfig: newConfig,
+                      }),
+                    });
+                    await fetchConfig();
+                  }}
+                />
+              </CollapsibleTab>
+            )}
 
             {/* 缓存管理标签 - 仅站长可见 */}
             {role === 'owner' && (

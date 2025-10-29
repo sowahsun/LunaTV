@@ -5,11 +5,11 @@ import { Redis } from '@upstash/redis';
 import { AdminConfig } from './admin.types';
 import {
   ContentStat,
+  EpisodeSkipConfig,
   Favorite,
   IStorage,
   PlayRecord,
   PlayStatsResult,
-  SkipConfig,
   UserPlayStat,
 } from './types';
 
@@ -226,6 +226,10 @@ export class UpstashRedisStorage implements IStorage {
     if (skipConfigKeys.length > 0) {
       await withRetry(() => this.client.del(...skipConfigKeys));
     }
+
+    // 删除用户登入统计数据
+    const loginStatsKey = `user_login_stats:${userName}`;
+    await withRetry(() => this.client.del(loginStatsKey));
   }
 
   // ---------- 搜索历史 ----------
@@ -278,11 +282,32 @@ export class UpstashRedisStorage implements IStorage {
 
   async getAdminConfig(): Promise<AdminConfig | null> {
     const val = await withRetry(() => this.client.get(this.adminConfigKey()));
-    return val ? (val as AdminConfig) : null;
+    if (!val) return null;
+
+    // 智能兼容：自动识别 JSON 字符串或对象
+    if (typeof val === 'string') {
+      try {
+        return JSON.parse(val);
+      } catch (e) {
+        console.error('解析 AdminConfig JSON 失败:', e);
+        return null;
+      }
+    }
+
+    // 对象格式，直接返回
+    return val as AdminConfig;
   }
 
   async setAdminConfig(config: AdminConfig): Promise<void> {
-    await withRetry(() => this.client.set(this.adminConfigKey(), config));
+    // 智能保存：尝试 JSON 字符串，失败则用对象（兼容两种方式）
+    try {
+      const jsonStr = JSON.stringify(config);
+      await withRetry(() => this.client.set(this.adminConfigKey(), jsonStr));
+    } catch (e) {
+      // JSON 序列化失败，回退到对象方式
+      console.warn('[Upstash] JSON.stringify 失败，回退到对象方式:', e);
+      await withRetry(() => this.client.set(this.adminConfigKey(), config));
+    }
   }
 
   // ---------- 跳过片头片尾配置 ----------
@@ -294,18 +319,18 @@ export class UpstashRedisStorage implements IStorage {
     userName: string,
     source: string,
     id: string
-  ): Promise<SkipConfig | null> {
+  ): Promise<EpisodeSkipConfig | null> {
     const val = await withRetry(() =>
       this.client.get(this.skipConfigKey(userName, source, id))
     );
-    return val ? (val as SkipConfig) : null;
+    return val ? (val as EpisodeSkipConfig) : null;
   }
 
   async setSkipConfig(
     userName: string,
     source: string,
     id: string,
-    config: SkipConfig
+    config: EpisodeSkipConfig
   ): Promise<void> {
     await withRetry(() =>
       this.client.set(this.skipConfigKey(userName, source, id), config)
@@ -324,7 +349,7 @@ export class UpstashRedisStorage implements IStorage {
 
   async getAllSkipConfigs(
     userName: string
-  ): Promise<{ [key: string]: SkipConfig }> {
+  ): Promise<{ [key: string]: EpisodeSkipConfig }> {
     const pattern = `u:${userName}:skip:*`;
     const keys = await withRetry(() => this.client.keys(pattern));
 
@@ -332,7 +357,7 @@ export class UpstashRedisStorage implements IStorage {
       return {};
     }
 
-    const configs: { [key: string]: SkipConfig } = {};
+    const configs: { [key: string]: EpisodeSkipConfig } = {};
 
     // 批量获取所有配置
     const values = await withRetry(() => this.client.mget(keys));
@@ -344,7 +369,74 @@ export class UpstashRedisStorage implements IStorage {
         const match = key.match(/^u:.+?:skip:(.+)$/);
         if (match) {
           const sourceAndId = match[1];
-          configs[sourceAndId] = value as SkipConfig;
+          configs[sourceAndId] = value as EpisodeSkipConfig;
+        }
+      }
+    });
+
+    return configs;
+  }
+
+  // ---------- 剧集跳过配置（新版，多片段支持）----------
+  private episodeSkipConfigKey(user: string, source: string, id: string) {
+    return `u:${user}:episodeskip:${source}+${id}`;
+  }
+
+  async getEpisodeSkipConfig(
+    userName: string,
+    source: string,
+    id: string
+  ): Promise<EpisodeSkipConfig | null> {
+    const val = await withRetry(() =>
+      this.client.get(this.episodeSkipConfigKey(userName, source, id))
+    );
+    return val ? (val as EpisodeSkipConfig) : null;
+  }
+
+  async saveEpisodeSkipConfig(
+    userName: string,
+    source: string,
+    id: string,
+    config: EpisodeSkipConfig
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.set(this.episodeSkipConfigKey(userName, source, id), config)
+    );
+  }
+
+  async deleteEpisodeSkipConfig(
+    userName: string,
+    source: string,
+    id: string
+  ): Promise<void> {
+    await withRetry(() =>
+      this.client.del(this.episodeSkipConfigKey(userName, source, id))
+    );
+  }
+
+  async getAllEpisodeSkipConfigs(
+    userName: string
+  ): Promise<{ [key: string]: EpisodeSkipConfig }> {
+    const pattern = `u:${userName}:episodeskip:*`;
+    const keys = await withRetry(() => this.client.keys(pattern));
+
+    if (keys.length === 0) {
+      return {};
+    }
+
+    const configs: { [key: string]: EpisodeSkipConfig } = {};
+
+    // 批量获取所有配置
+    const values = await withRetry(() => this.client.mget(keys));
+
+    keys.forEach((key, index) => {
+      const value = values[index];
+      if (value) {
+        // 从key中提取source+id
+        const match = key.match(/^u:.+?:episodeskip:(.+)$/);
+        if (match) {
+          const sourceAndId = match[1];
+          configs[sourceAndId] = value as EpisodeSkipConfig;
         }
       }
     });
@@ -449,6 +541,7 @@ export class UpstashRedisStorage implements IStorage {
         mostWatchedSource: string;
         registrationDays: number;
         lastLoginTime: number;
+        loginCount: number;
         createdAt: number;
       }> = [];
       let totalWatchTime = 0;
@@ -498,6 +591,7 @@ export class UpstashRedisStorage implements IStorage {
           mostWatchedSource: userStat.mostWatchedSource,
           registrationDays,
           lastLoginTime,
+          loginCount: userStat.loginCount || 0, // 添加登入次数字段
           createdAt: userCreatedAt,
         };
 
@@ -622,6 +716,44 @@ export class UpstashRedisStorage implements IStorage {
       const playRecords = Object.values(records);
 
       if (playRecords.length === 0) {
+        // 即使没有播放记录，也要获取登入统计
+        let loginStats = {
+          loginCount: 0,
+          firstLoginTime: 0,
+          lastLoginTime: 0,
+          lastLoginDate: 0
+        };
+
+        try {
+          const loginStatsKey = `user_login_stats:${userName}`;
+          const storedLoginStats = await this.client.get<{
+            loginCount?: number;
+            firstLoginTime?: number;
+            lastLoginTime?: number;
+            lastLoginDate?: number;
+          }>(loginStatsKey);
+          console.log(`[Upstash-NoRecords] 用户 ${userName} 登入统计查询:`, {
+            key: loginStatsKey,
+            rawValue: storedLoginStats,
+            hasValue: !!storedLoginStats
+          });
+
+          if (storedLoginStats) {
+            // Upstash Redis返回的是对象，不需要JSON.parse
+            loginStats = {
+              loginCount: storedLoginStats.loginCount || 0,
+              firstLoginTime: storedLoginStats.firstLoginTime || 0,
+              lastLoginTime: storedLoginStats.lastLoginTime || 0,
+              lastLoginDate: storedLoginStats.lastLoginDate || storedLoginStats.lastLoginTime || 0
+            };
+            console.log(`[Upstash-NoRecords] 解析后的登入统计:`, loginStats);
+          } else {
+            console.log(`[Upstash-NoRecords] 用户 ${userName} 没有登入统计数据`);
+          }
+        } catch (error) {
+          console.error(`获取用户 ${userName} 登入统计失败:`, error);
+        }
+
         return {
           username: userName,
           totalWatchTime: 0,
@@ -633,7 +765,12 @@ export class UpstashRedisStorage implements IStorage {
           // 新增字段
           totalMovies: 0,
           firstWatchDate: Date.now(),
-          lastUpdateTime: Date.now()
+          lastUpdateTime: Date.now(),
+          // 登入统计字段
+          loginCount: loginStats.loginCount,
+          firstLoginTime: loginStats.firstLoginTime,
+          lastLoginTime: loginStats.lastLoginTime,
+          lastLoginDate: loginStats.lastLoginDate
         };
       }
 
@@ -672,6 +809,44 @@ export class UpstashRedisStorage implements IStorage {
         }
       }
 
+      // 获取登入统计数据
+      let loginStats = {
+        loginCount: 0,
+        firstLoginTime: 0,
+        lastLoginTime: 0,
+        lastLoginDate: 0
+      };
+
+      try {
+        const loginStatsKey = `user_login_stats:${userName}`;
+        const storedLoginStats = await this.client.get<{
+          loginCount?: number;
+          firstLoginTime?: number;
+          lastLoginTime?: number;
+          lastLoginDate?: number;
+        }>(loginStatsKey);
+        console.log(`[Upstash] 用户 ${userName} 登入统计查询:`, {
+          key: loginStatsKey,
+          rawValue: storedLoginStats,
+          hasValue: !!storedLoginStats
+        });
+
+        if (storedLoginStats) {
+          // Upstash Redis返回的是对象，不需要JSON.parse
+          loginStats = {
+            loginCount: storedLoginStats.loginCount || 0,
+            firstLoginTime: storedLoginStats.firstLoginTime || 0,
+            lastLoginTime: storedLoginStats.lastLoginTime || 0,
+            lastLoginDate: storedLoginStats.lastLoginDate || storedLoginStats.lastLoginTime || 0
+          };
+          console.log(`[Upstash] 解析后的登入统计:`, loginStats);
+        } else {
+          console.log(`[Upstash] 用户 ${userName} 没有登入统计数据`);
+        }
+      } catch (error) {
+        console.error(`获取用户 ${userName} 登入统计失败:`, error);
+      }
+
       return {
         username: userName,
         totalWatchTime,
@@ -683,7 +858,12 @@ export class UpstashRedisStorage implements IStorage {
         // 新增字段
         totalMovies,
         firstWatchDate,
-        lastUpdateTime: Date.now()
+        lastUpdateTime: Date.now(),
+        // 登入统计字段
+        loginCount: loginStats.loginCount,
+        firstLoginTime: loginStats.firstLoginTime,
+        lastLoginTime: loginStats.lastLoginTime,
+        lastLoginDate: loginStats.lastLoginDate
       };
     } catch (error) {
       console.error(`获取用户 ${userName} 统计失败:`, error);
@@ -698,7 +878,12 @@ export class UpstashRedisStorage implements IStorage {
         // 新增字段
         totalMovies: 0,
         firstWatchDate: Date.now(),
-        lastUpdateTime: Date.now()
+        lastUpdateTime: Date.now(),
+        // 登入统计字段（错误时使用默认值）
+        loginCount: 0,
+        firstLoginTime: 0,
+        lastLoginTime: 0,
+        lastLoginDate: 0
       };
     }
   }
@@ -786,6 +971,49 @@ export class UpstashRedisStorage implements IStorage {
       await this.deleteCache('play_stats_summary');
     } catch (error) {
       console.error('更新播放统计失败:', error);
+    }
+  }
+
+  // 更新用户登入统计
+  async updateUserLoginStats(
+    userName: string,
+    loginTime: number,
+    isFirstLogin?: boolean
+  ): Promise<void> {
+    try {
+      const loginStatsKey = `user_login_stats:${userName}`;
+
+      // 获取当前登入统计数据
+      const currentStats = await this.client.get<{
+        loginCount?: number;
+        firstLoginTime?: number | null;
+        lastLoginTime?: number | null;
+        lastLoginDate?: number | null;
+      }>(loginStatsKey);
+      const loginStats = currentStats || {
+        loginCount: 0,
+        firstLoginTime: null,
+        lastLoginTime: null,
+        lastLoginDate: null
+      };
+
+      // 更新统计数据
+      loginStats.loginCount = (loginStats.loginCount || 0) + 1;
+      loginStats.lastLoginTime = loginTime;
+      loginStats.lastLoginDate = loginTime; // 保持兼容性
+
+      // 如果是首次登入，记录首次登入时间
+      if (isFirstLogin || !loginStats.firstLoginTime) {
+        loginStats.firstLoginTime = loginTime;
+      }
+
+      // 保存更新后的统计数据 - Upstash Redis 会自动序列化对象，不需要 JSON.stringify
+      await this.client.set(loginStatsKey, loginStats);
+
+      console.log(`用户 ${userName} 登入统计已更新:`, loginStats);
+    } catch (error) {
+      console.error(`更新用户 ${userName} 登入统计失败:`, error);
+      throw error;
     }
   }
 }

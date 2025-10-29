@@ -250,6 +250,8 @@ async function refreshRecordAndFavorites() {
                 total_time: record.total_time,
                 save_time: record.save_time,
                 search_title: record.search_title,
+                // 🔑 关键修复：保留原始集数，避免被Cron任务覆盖
+                original_episodes: record.original_episodes,
               });
               console.log(
                 `更新播放记录: ${record.title} (${record.total_episodes} -> ${episodeCount})`
@@ -331,6 +333,9 @@ async function cleanupInactiveUsers() {
     console.log('🔧 正在获取配置...');
     const config = await getConfig();
     console.log('✅ 配置获取成功');
+
+    // 清理策略：基于登入时间而不是播放记录
+    // 删除条件：注册时间 >= X天 且 (从未登入 或 最后登入时间 >= X天)
 
     // 预热 Redis 连接，避免冷启动
     console.log('🔥 预热数据库连接...');
@@ -424,18 +429,24 @@ async function cleanupInactiveUsers() {
             new Promise((_, reject) =>
               setTimeout(() => reject(new Error('getUserPlayStat超时')), 5000)
             )
-          ]) as { lastPlayTime: number; totalPlays: number; [key: string]: any };
+          ]) as { lastLoginTime?: number; firstLoginTime?: number; loginCount?: number; [key: string]: any };
           console.log(`  📈 用户统计结果:`, userStats);
         } catch (err) {
           console.error(`  ❌ 获取用户统计失败: ${err}, 跳过该用户`);
           continue;
         }
 
-        // 检查是否满足删除条件：从未播放过内容
-        const hasNeverPlayed = userStats.lastPlayTime === 0 || userStats.totalPlays === 0;
+        // 检查是否满足删除条件：基于登入时间而不是播放记录
+        const lastLoginTime = userStats.lastLoginTime || userStats.lastLoginDate || userStats.firstLoginTime || 0;
+        const hasNeverLoggedIn = lastLoginTime === 0 || (userStats.loginCount || 0) === 0;
+        const loginTooOld = lastLoginTime > 0 && lastLoginTime < cutoffTime;
 
-        if (isOldEnough && hasNeverPlayed) {
-          console.log(`🗑️ 删除非活跃用户: ${user.username} (注册于: ${new Date(userCreatedAt).toISOString()}, 播放次数: ${userStats.totalPlays}, 设置阈值: ${inactiveUserDays}天)`);
+        // 删除条件：注册时间够久 且 (从未登入 或 最后登入时间超过阈值)
+        const shouldDelete = isOldEnough && (hasNeverLoggedIn || loginTooOld);
+
+        if (shouldDelete) {
+          const deleteReason = hasNeverLoggedIn ? '从未登入' : `最后登入时间过久: ${new Date(lastLoginTime).toISOString()}`;
+          console.log(`🗑️ 删除非活跃用户: ${user.username} (注册于: ${new Date(userCreatedAt).toISOString()}, 登入次数: ${userStats.loginCount || 0}, 原因: ${deleteReason}, 阈值: ${inactiveUserDays}天)`);
 
           // 从数据库删除用户数据
           await db.deleteUser(user.username);
@@ -448,7 +459,14 @@ async function cleanupInactiveUsers() {
 
           deletedCount++;
         } else {
-          const reason = !isOldEnough ? `注册时间不足${inactiveUserDays}天` : '用户有播放记录';
+          let reason;
+          if (!isOldEnough) {
+            reason = `注册时间不足${inactiveUserDays}天`;
+          } else if (!hasNeverLoggedIn && !loginTooOld) {
+            reason = `最近有登入活动 (最后登入: ${lastLoginTime > 0 ? new Date(lastLoginTime).toISOString() : '未知'})`;
+          } else {
+            reason = '其他原因';
+          }
           console.log(`✅ 保留用户 ${user.username}: ${reason}`);
         }
 
@@ -465,7 +483,83 @@ async function cleanupInactiveUsers() {
       console.log('✨ 清理完成，无需删除任何用户');
     }
 
+    // 优化活跃用户的统计显示（等级系统）
+    console.log('🎯 开始优化活跃用户等级显示...');
+    await optimizeActiveUserLevels();
+
   } catch (err) {
     console.error('🚫 清理非活跃用户任务失败:', err);
+  }
+}
+
+// 用户等级定义
+const USER_LEVELS = [
+  { level: 1, name: "新星观众", icon: "🌟", minLogins: 1, maxLogins: 9, description: "刚刚开启观影之旅" },
+  { level: 2, name: "常客影迷", icon: "🎬", minLogins: 10, maxLogins: 49, description: "热爱电影的观众" },
+  { level: 3, name: "资深观众", icon: "📺", minLogins: 50, maxLogins: 199, description: "对剧集有独特品味" },
+  { level: 4, name: "影院达人", icon: "🎭", minLogins: 200, maxLogins: 499, description: "深度电影爱好者" },
+  { level: 5, name: "观影专家", icon: "🏆", minLogins: 500, maxLogins: 999, description: "拥有丰富观影经验" },
+  { level: 6, name: "传奇影神", icon: "👑", minLogins: 1000, maxLogins: 2999, description: "影视界的传奇人物" },
+  { level: 7, name: "殿堂影帝", icon: "💎", minLogins: 3000, maxLogins: 9999, description: "影视殿堂的至尊" },
+  { level: 8, name: "永恒之光", icon: "✨", minLogins: 10000, maxLogins: Infinity, description: "永恒闪耀的观影之光" }
+];
+
+function calculateUserLevel(loginCount: number) {
+  for (const level of USER_LEVELS) {
+    if (loginCount >= level.minLogins && loginCount <= level.maxLogins) {
+      return level;
+    }
+  }
+  return USER_LEVELS[USER_LEVELS.length - 1];
+}
+
+async function optimizeActiveUserLevels() {
+  try {
+    const allUsers = await db.getAllUsers();
+    let optimizedCount = 0;
+
+    for (const user of allUsers) {
+      try {
+        // 检查用户是否存在
+        const userExists = await db.checkUserExist(user);
+        if (!userExists) continue;
+
+        const userStats = await db.getUserPlayStat(user);
+        if (!userStats || !userStats.loginCount) continue;
+
+        // 计算用户等级（所有用户都有等级）
+        const userLevel = calculateUserLevel(userStats.loginCount);
+
+        // 为所有用户记录等级信息
+        if (userStats.loginCount > 0) {
+          const optimizedStats = {
+            ...userStats,
+            userLevel: {
+              level: userLevel.level,
+              name: userLevel.name,
+              icon: userLevel.icon,
+              description: userLevel.description,
+              displayTitle: `${userLevel.icon} ${userLevel.name}`
+            },
+            displayLoginCount: userStats.loginCount > 10000 ? '10000+' :
+                              userStats.loginCount > 1000 ? `${Math.floor(userStats.loginCount / 1000)}k+` :
+                              userStats.loginCount.toString(),
+            lastLevelUpdate: new Date().toISOString()
+          };
+
+          // 注意：这里我们只计算等级信息用于日志显示，不保存到数据库
+          // 等级信息会在前端动态计算，确保数据一致性
+          optimizedCount++;
+
+          console.log(`🎯 用户等级: ${user} -> ${userLevel.icon} ${userLevel.name} (登录${userStats.loginCount}次)`);
+        }
+      } catch (err) {
+        console.error(`❌ 优化用户等级失败 (${user}):`, err);
+      }
+    }
+
+    console.log(`✅ 等级优化完成，共优化 ${optimizedCount} 个用户`);
+  } catch (err) {
+    console.error('🚫 等级优化任务失败:', err);
   }
 }
